@@ -2,6 +2,8 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
+require("./db");
+const Message = require("./models/Message");
 
 const app = express();
 
@@ -19,66 +21,119 @@ const io = new Server(server, {
 // username -> socket.id
 const users = {};
 
+// Store all messages in memory
+const messages = [];
+
 io.on("connection", (socket) => {
   console.log("Connected :", socket.id);
 
-  // Register username
+  // ==========================
+  // Register User
+  // ==========================
   socket.on("register", (username) => {
+    socket.username = username;
+
     users[username] = socket.id;
 
-    io.emit("user_status", {
-      username,
-      online: true,
-    });
-
-    console.log(users);
+    console.log("Online Users:", users);
 
     io.emit("online_users", Object.keys(users));
   });
 
-  socket.on("typing", (data) => {
-    const receiverSocket = users[data.to];
+  // ==========================
+  // Typing
+  // ==========================
+  socket.on("typing", ({ from, to }) => {
+    const receiverSocket = users[to];
 
     if (receiverSocket) {
       io.to(receiverSocket).emit("typing", {
-        from: data.from,
+        from,
       });
     }
   });
 
-  // Private Message
-  socket.on("private_message", (data) => {
-    const receiverSocket = users[data.to];
+  // ==========================
+  // Send Message
+  // ==========================
+  socket.on("private_message", async (data) => {
+    try {
+      const receiverSocket = users[data.to];
 
-    const message = {
-      from: data.from,
-      to: data.to,
-      message: data.message,
-      time: new Date().toLocaleTimeString(),
-      delivered: !!receiverSocket,
-    };
+      const message = await Message.create({
+        from: data.from,
+        to: data.to,
+        message: data.message,
+        delivered: !!receiverSocket,
+        read: false,
+      });
 
-    // Send to receiver
-    if (receiverSocket) {
-      io.to(receiverSocket).emit("private_message", message);
+      socket.emit("private_message", message);
+
+      if (receiverSocket) {
+        io.to(receiverSocket).emit("private_message", message);
+      }
+    } catch (err) {
+      console.log(err);
     }
-
-    // Send back to sender so both devices show the message
-    socket.emit("private_message", message);
   });
 
+  // ==========================
+  // Chat History
+  // ==========================
+  socket.on("get_messages", async ({ from, to }) => {
+    try {
+      const history = await Message.find({
+        $or: [
+          {
+            from,
+            to,
+          },
+
+          {
+            from: to,
+            to: from,
+          },
+        ],
+      }).sort({
+        createdAt: 1,
+      });
+
+      socket.emit("chat_history", history);
+    } catch (err) {
+      console.log(err);
+    }
+  });
+
+  // ==========================
+  // Read Receipt
+  // ==========================
+  socket.on("read_message", async ({ messageId, from }) => {
+    try {
+      await Message.findByIdAndUpdate(messageId, {
+        read: true,
+      });
+
+      const senderSocket = users[from];
+
+      if (senderSocket) {
+        io.to(senderSocket).emit("message_read", {
+          messageId,
+        });
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  });
+
+  // ==========================
+  // Disconnect
+  // ==========================
   socket.on("disconnect", () => {
     console.log("Disconnected :", socket.id);
 
-    for (const username in users) {
-      if (users[username] === socket.id) {
-        delete users[username];
-
-        io.emit("user_status", {
-          username: socket.username,
-          online: false,
-        });
-      }
+    if (socket.username) {
+      delete users[socket.username];
     }
 
     io.emit("online_users", Object.keys(users));
@@ -86,5 +141,5 @@ io.on("connection", (socket) => {
 });
 
 server.listen(3000, () => {
-  console.log("Server Started on 3000");
+  console.log("🚀 Server running on port 3000");
 });
