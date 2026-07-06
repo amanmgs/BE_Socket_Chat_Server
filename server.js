@@ -55,6 +55,7 @@ io.on("connection", (socket) => {
       to: data.to,
       message: data.message,
       time: new Date().toLocaleTimeString(),
+      delivered: !!receiverSocket,
     };
 
     // Send to receiver
