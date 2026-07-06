@@ -10,70 +10,80 @@ app.use(cors());
 const server = http.createServer(app);
 
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 
 // username -> socket.id
 const users = {};
 
 io.on("connection", (socket) => {
+  console.log("Connected :", socket.id);
 
-    console.log("Connected :", socket.id);
+  // Register username
+  socket.on("register", (username) => {
+    users[username] = socket.id;
 
-    // Register username
-    socket.on("register", (username) => {
-
-        users[username] = socket.id;
-
-        console.log(users);
-
-        io.emit("online_users", Object.keys(users));
+    io.emit("user_status", {
+      username,
+      online: true,
     });
 
-    // Private Message
-   socket.on("private_message", (data) => {
+    console.log(users);
 
-        const receiverSocket = users[data.to];
+    io.emit("online_users", Object.keys(users));
+  });
 
-        const message = {
-            from: data.from,
-            to: data.to,
-            message: data.message,
-            time: new Date().toLocaleTimeString(),
-        };
+  socket.on("typing", (data) => {
+    const receiverSocket = users[data.to];
 
-        // Send to receiver
-        if (receiverSocket) {
-            io.to(receiverSocket).emit("private_message", message);
-        }
+    if (receiverSocket) {
+      io.to(receiverSocket).emit("typing", {
+        from: data.from,
+      });
+    }
+  });
 
-        // Send back to sender so both devices show the message
-        socket.emit("private_message", message);
-    });
+  // Private Message
+  socket.on("private_message", (data) => {
+    const receiverSocket = users[data.to];
 
-    socket.on("disconnect", () => {
+    const message = {
+      from: data.from,
+      to: data.to,
+      message: data.message,
+      time: new Date().toLocaleTimeString(),
+    };
 
-        console.log("Disconnected :", socket.id);
+    // Send to receiver
+    if (receiverSocket) {
+      io.to(receiverSocket).emit("private_message", message);
+    }
 
-        for (const username in users) {
+    // Send back to sender so both devices show the message
+    socket.emit("private_message", message);
+  });
 
-            if (users[username] === socket.id) {
+  socket.on("disconnect", () => {
+    console.log("Disconnected :", socket.id);
 
-                delete users[username];
+    for (const username in users) {
+      if (users[username] === socket.id) {
+        delete users[username];
 
-            }
+        io.emit("user_status", {
+          username: socket.username,
+          online: false,
+        });
+      }
+    }
 
-        }
-
-        io.emit("online_users", Object.keys(users));
-
-    });
-
+    io.emit("online_users", Object.keys(users));
+  });
 });
 
 server.listen(3000, () => {
-    console.log("Server Started on 3000");
+  console.log("Server Started on 3000");
 });
