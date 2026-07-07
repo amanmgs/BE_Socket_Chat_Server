@@ -4,12 +4,16 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 require("./db");
 const Message = require("./models/Message");
+const User = require("./models/User");
 
 const app = express();
 
 app.use(cors());
 
 const server = http.createServer(app);
+
+// Store all messages in memory
+// const messages = [];
 
 const io = new Server(server, {
   cors: {
@@ -18,11 +22,11 @@ const io = new Server(server, {
   },
 });
 
-// username -> socket.id
-const users = {};
+async function broadcastUsers(excludeUsername = null) {
+  const users = await User.find().sort({ username: 1 });
 
-// Store all messages in memory
-const messages = [];
+  io.emit("online_users", users);
+}
 
 io.on("connection", (socket) => {
   console.log("Connected :", socket.id);
@@ -30,26 +34,48 @@ io.on("connection", (socket) => {
   // ==========================
   // Register User
   // ==========================
-  socket.on("register", (username) => {
-    socket.username = username;
+  socket.on("register", async ({ name, deviceId }) => {
+    try {
+      socket.username = name;
 
-    users[username] = socket.id;
+      // Create if doesn't exist, otherwise update
+      const user = await User.findOneAndUpdate(
+        { username: name, deviceId },
+        {
+          username: name,
+          deviceId,
+          socketId: socket.id,
+          online: true,
+          lastSeen: new Date(),
+        },
+        {
+          upsert: true,
+          new: true,
+        },
+      );
 
-    console.log("Online Users:", users);
+      console.log("User:", user);
 
-    io.emit("online_users", Object.keys(users));
+      await broadcastUsers(name);
+    } catch (err) {
+      console.log(err);
+    }
   });
 
   // ==========================
   // Typing
   // ==========================
-  socket.on("typing", ({ from, to }) => {
-    const receiverSocket = users[to];
+  socket.on("typing", async ({ from, to }) => {
+    try {
+      const receiver = await User.findOne({ username: to });
 
-    if (receiverSocket) {
-      io.to(receiverSocket).emit("typing", {
-        from,
-      });
+      if (receiver?.socketId) {
+        io.to(receiver.socketId).emit("typing", {
+          from,
+        });
+      }
+    } catch (err) {
+      console.log(err);
     }
   });
 
@@ -58,20 +84,24 @@ io.on("connection", (socket) => {
   // ==========================
   socket.on("private_message", async (data) => {
     try {
-      const receiverSocket = users[data.to];
+      const receiver = await User.findOne({
+        username: data.to,
+      });
+
+      const delivered = !!receiver?.socketId;
 
       const message = await Message.create({
         from: data.from,
         to: data.to,
         message: data.message,
-        delivered: !!receiverSocket,
+        delivered,
         read: false,
       });
 
       socket.emit("private_message", message);
 
-      if (receiverSocket) {
-        io.to(receiverSocket).emit("private_message", message);
+      if (receiver?.socketId) {
+        io.to(receiver.socketId).emit("private_message", message);
       }
     } catch (err) {
       console.log(err);
@@ -114,10 +144,12 @@ io.on("connection", (socket) => {
         read: true,
       });
 
-      const senderSocket = users[from];
+      const sender = await User.findOne({
+        username: from,
+      });
 
-      if (senderSocket) {
-        io.to(senderSocket).emit("message_read", {
+      if (sender?.socketId) {
+        io.to(sender.socketId).emit("message_read", {
           messageId,
         });
       }
@@ -129,14 +161,25 @@ io.on("connection", (socket) => {
   // ==========================
   // Disconnect
   // ==========================
-  socket.on("disconnect", () => {
-    console.log("Disconnected :", socket.id);
+  socket.on("disconnect", async () => {
+    try {
+      if (!socket.username) return;
 
-    if (socket.username) {
-      delete users[socket.username];
+      await User.findOneAndUpdate(
+        { username: socket.username },
+        {
+          online: false,
+          socketId: "",
+          lastSeen: new Date(),
+        },
+      );
+
+      await broadcastUsers(socket.username);
+
+      console.log(socket.username + " is offline");
+    } catch (err) {
+      console.log(err);
     }
-
-    io.emit("online_users", Object.keys(users));
   });
 });
 
