@@ -20,9 +20,28 @@ const io = new Server(server, {
 });
 
 async function broadcastUsers(excludeUsername = null) {
-  const users = await User.find().sort({ username: 1 });
+  const allUsers = await User.find().sort({ username: 1 });
 
-  io.emit("online_users", users);
+  for (const currentUser of allUsers) {
+    if (!currentUser.socketId) continue;
+
+    const users = await Promise.all(
+      allUsers.map(async (user) => {
+        const unreadCount = await Message.countDocuments({
+          from: user.username,
+          to: currentUser.username,
+          read: false,
+        });
+
+        return {
+          ...user.toObject(),
+          unreadCount,
+        };
+      }),
+    );
+
+    io.to(currentUser.socketId).emit("online_users", users);
+  }
 }
 
 io.on("connection", (socket) => {
@@ -100,6 +119,8 @@ io.on("connection", (socket) => {
       if (receiver?.socketId) {
         io.to(receiver.socketId).emit("private_message", message);
       }
+
+      await broadcastUsers();
     } catch (err) {
       console.log(err);
     }
@@ -155,6 +176,8 @@ io.on("connection", (socket) => {
           messageId: message._id,
         });
       }
+
+      await broadcastUsers();
     } catch (err) {
       console.log(err);
     }
