@@ -12,9 +12,6 @@ app.use(cors());
 
 const server = http.createServer(app);
 
-// Store all messages in memory
-// const messages = [];
-
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -140,17 +137,22 @@ io.on("connection", (socket) => {
   // ==========================
   socket.on("read_message", async ({ messageId, from }) => {
     try {
-      await Message.findByIdAndUpdate(messageId, {
-        read: true,
-      });
+      const message = await Message.findByIdAndUpdate(
+        messageId,
+        { read: true },
+        { new: true },
+      );
+
+      if (!message) return;
 
       const sender = await User.findOne({
         username: from,
+        online: true,
       });
 
       if (sender?.socketId) {
         io.to(sender.socketId).emit("message_read", {
-          messageId,
+          messageId: message._id,
         });
       }
     } catch (err) {
